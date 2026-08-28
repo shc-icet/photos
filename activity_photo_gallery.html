@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Activity Photo Gallery</title>
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5;color:#222}
+header{background:#8b0000;color:#fff;padding:24px;text-align:center}
+main{max-width:1100px;margin:24px auto;padding:0 16px}
+.card{background:#fff;border:1px solid #ddd;border-radius:14px;padding:18px;margin-bottom:20px}
+label{font-weight:700;display:block;margin:10px 0 6px}
+input,button{font:inherit}
+input[type=text],input[type=file]{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;box-sizing:border-box}
+button,.btn{background:#b91c1c;color:#fff;border:0;padding:10px 14px;border-radius:8px;cursor:pointer;text-decoration:none;display:inline-block}
+.secondary{background:#eee;color:#8b0000}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.activities,.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.activity,.photo{border:1px solid #ddd;border-radius:10px;padding:12px;background:#fff}
+.photo img{width:100%;height:180px;object-fit:cover;border-radius:8px}
+.small{font-size:13px;color:#666}
+#linkBox{display:none;background:#f0fdfa;border:1px solid #99f6e4;padding:12px;border-radius:10px;margin-top:14px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+<h1>School Activity Photo Gallery</h1>
+<p>Upload photos and create a link based on the activity name.</p>
+</header>
+<main>
+<section class="card">
+<h2>Add Activity</h2>
+<div class="grid">
+<div>
+<label>Activity Name</label>
+<input id="activityName" type="text" placeholder="Example: Foundation Day 2026">
+</div>
+<div>
+<label>Photos</label>
+<input id="photoFiles" type="file" accept="image/*" multiple>
+</div>
+</div>
+<p><button id="saveBtn">Upload & Create Link</button> <button id="clearBtn" class="secondary">Clear</button></p>
+<div id="linkBox">
+<strong>Generated link:</strong>
+<input id="generatedLink" type="text" readonly>
+<p><button id="copyBtn" class="secondary">Copy Link</button> <a id="openBtn" class="btn" href="#">Open Gallery</a></p>
+</div>
+<p class="small">This standalone version saves photos in this browser using IndexedDB. The generated link works on the same device/browser. For public links accessible from other devices, the page needs hosting plus cloud storage or a backend.</p>
+</section>
+
+<section class="card">
+<h2>Activities</h2>
+<input id="searchBox" type="text" placeholder="Search activity...">
+<div id="activityList" class="activities" style="margin-top:14px"></div>
+</section>
+
+<section class="card">
+<h2 id="galleryTitle">Photo Gallery</h2>
+<p id="galleryInfo" class="small">Select an activity.</p>
+<div id="gallery" class="gallery"></div>
+</section>
+</main>
+
+<script>
+const DB='activityPhotoDB', STORE='activities';
+let db;
+
+function slugify(t){return t.toLowerCase().trim().replace(/[^a-z0-9\s-]/g,'').replace(/\s+/g,'-').replace(/-+/g,'-')}
+function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+
+function openDB(){
+ return new Promise((res,rej)=>{
+  const r=indexedDB.open(DB,1);
+  r.onupgradeneeded=e=>{if(!e.target.result.objectStoreNames.contains(STORE))e.target.result.createObjectStore(STORE,{keyPath:'slug'})};
+  r.onsuccess=e=>{db=e.target.result;res()};
+  r.onerror=()=>rej(r.error);
+ });
+}
+function getAll(){return new Promise((res,rej)=>{const r=db.transaction(STORE).objectStore(STORE).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
+function getOne(slug){return new Promise((res,rej)=>{const r=db.transaction(STORE).objectStore(STORE).get(slug);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+function putOne(obj){return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put(obj);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})}
+function delOne(slug){return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).delete(slug);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})}
+function readFile(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res({name:f.name,data:r.result});r.onerror=()=>rej(r.error);r.readAsDataURL(f)})}
+
+async function renderActivities(filter=''){
+ const all=(await getAll()).filter(a=>a.name.toLowerCase().includes(filter.toLowerCase()));
+ const box=document.getElementById('activityList');
+ box.innerHTML='';
+ if(!all.length){box.innerHTML='<p class="small">No activities yet.</p>';return}
+ all.forEach(a=>{
+  const d=document.createElement('div');
+  d.className='activity';
+  d.innerHTML=`<h3>${esc(a.name)}</h3><p class="small">${a.photos.length} photo(s)</p>
+  <a class="btn" href="#${a.slug}">View</a>
+  <button class="secondary" onclick="copyLink('${a.slug}')">Copy Link</button>
+  <button class="secondary" onclick="removeActivity('${a.slug}')">Delete</button>`;
+  box.appendChild(d);
+ });
+}
+
+async function saveActivity(){
+ const name=document.getElementById('activityName').value.trim();
+ const files=[...document.getElementById('photoFiles').files];
+ if(!name)return alert('Enter the activity name.');
+ if(!files.length)return alert('Choose at least one photo.');
+ const slug=slugify(name);
+ const old=await getOne(slug);
+ const photos=[];
+ for(const f of files)photos.push(await readFile(f));
+ await putOne({slug,name,photos:[...(old?.photos||[]),...photos]});
+ const url=location.href.split('#')[0]+'#'+slug;
+ document.getElementById('generatedLink').value=url;
+ document.getElementById('openBtn').href='#'+slug;
+ document.getElementById('linkBox').style.display='block';
+ await renderActivities();
+ location.hash=slug;
+}
+
+async function showGallery(slug){
+ if(!slug)return;
+ const a=await getOne(slug);
+ const g=document.getElementById('gallery');
+ if(!a){document.getElementById('galleryTitle').textContent='Photo Gallery';document.getElementById('galleryInfo').textContent='Activity not found.';g.innerHTML='';return}
+ document.getElementById('galleryTitle').textContent=a.name;
+ document.getElementById('galleryInfo').textContent=a.photos.length+' photo(s)';
+ g.innerHTML='';
+ a.photos.forEach(p=>{
+  const d=document.createElement('div');
+  d.className='photo';
+  d.innerHTML=`<img src="${p.data}" alt="${esc(p.name)}"><p class="small">${esc(p.name)}</p>`;
+  g.appendChild(d);
+ });
+}
+
+function copyLink(slug){
+ const url=location.href.split('#')[0]+'#'+slug;
+ navigator.clipboard.writeText(url).then(()=>alert('Link copied.'));
+}
+async function removeActivity(slug){
+ if(!confirm('Delete this activity and its photos?'))return;
+ await delOne(slug);
+ if(location.hash==='#'+slug)history.replaceState(null,'',location.href.split('#')[0]);
+ await renderActivities(document.getElementById('searchBox').value);
+ document.getElementById('galleryTitle').textContent='Photo Gallery';
+ document.getElementById('galleryInfo').textContent='Select an activity.';
+ document.getElementById('gallery').innerHTML='';
+}
+
+document.getElementById('saveBtn').onclick=saveActivity;
+document.getElementById('clearBtn').onclick=()=>{document.getElementById('activityName').value='';document.getElementById('photoFiles').value='';document.getElementById('linkBox').style.display='none'};
+document.getElementById('copyBtn').onclick=()=>navigator.clipboard.writeText(document.getElementById('generatedLink').value).then(()=>alert('Link copied.'));
+document.getElementById('searchBox').oninput=e=>renderActivities(e.target.value);
+window.onhashchange=()=>showGallery(location.hash.slice(1));
+
+(async()=>{await openDB();await renderActivities();if(location.hash)await showGallery(location.hash.slice(1))})();
+</script>
+</body>
+</html>
